@@ -1,62 +1,90 @@
 import os
+import base64
 from PIL import Image as PILImage
-from agno.agent import Agent
-from agno.models.google import Gemini
-from agno.run.agent import RunOutput
 import streamlit as st
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.media import Image as AgnoImage
+from openai import OpenAI
 
-if "GOOGLE_API_KEY" not in st.session_state:
-    st.session_state.GOOGLE_API_KEY = None
+# -----------------------------
+# Configure OpenAI API Key
+# -----------------------------
+if "OPENAI_API_KEY" not in st.session_state:
+    st.session_state.OPENAI_API_KEY = None
 
 with st.sidebar:
     st.title("ℹ️ Configuration")
     
-    if not st.session_state.GOOGLE_API_KEY:
+    if not st.session_state.OPENAI_API_KEY:
         api_key = st.text_input(
-            "Enter your Google API Key:",
+            "Enter your OpenAI API Key:",
             type="password"
         )
         st.caption(
-            "Get your API key from [Google AI Studio]"
-            "(https://aistudio.google.com/apikey) 🔑"
+            "Get your API key from [OpenAI](https://platform.openai.com/account/api-keys) 🔑"
         )
         if api_key:
-            st.session_state.GOOGLE_API_KEY = api_key
+            st.session_state.OPENAI_API_KEY = api_key
             st.success("API Key saved!")
             st.rerun()
     else:
         st.success("API Key is configured")
         if st.button("🔄 Reset API Key"):
-            st.session_state.GOOGLE_API_KEY = None
+            st.session_state.OPENAI_API_KEY = None
             st.rerun()
     
     st.info(
         "This tool provides AI-powered analysis of medical imaging data using "
-        "advanced computer vision and radiological expertise."
+        "advanced radiological knowledge."
     )
     st.warning(
-        "⚠DISCLAIMER: This tool is for educational and informational purposes only. "
-        "All analyses should be reviewed by qualified healthcare professionals. "
-        "Do not make medical decisions based solely on this analysis."
+        "⚠DISCLAIMER: All analyses should be reviewed by qualified healthcare professionals."
     )
 
-medical_agent = Agent(
-    model=Gemini(
-        id="gemini-2.5-pro",
-        api_key=st.session_state.GOOGLE_API_KEY
-    ),
-    tools=[DuckDuckGoTools()],
-    markdown=True
-) if st.session_state.GOOGLE_API_KEY else None
+    st.info(
+        "This tool was developed by Chinedu David."
+    )
+# -----------------------------
+# GPT-4V Helper
+# -----------------------------
+def generate_analysis_with_image(prompt, image_path):
+    """Send prompt + image to GPT-4V via base64 embedding (OpenAI SDK >=1.0)"""
+    if not st.session_state.OPENAI_API_KEY:
+        st.error("OpenAI API Key not configured.")
+        return ""
+    
+    client = OpenAI(api_key=st.session_state.OPENAI_API_KEY)
 
-if not medical_agent:
-    st.warning("Please configure your API key in the sidebar to continue")
+    # Read and encode image
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-# Medical Analysis Query
-query = """
-You are a highly skilled medical imaging expert with extensive knowledge in radiology and diagnostic imaging. Analyze the patient's medical image and structure your response as follows:
+    # Embed the image in the user prompt
+    full_prompt = f"{prompt}\n\nPatient Image (base64 PNG): {image_b64}"
+
+    # GPT-4V chat completion
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",  # GPT-4V
+        messages=[{"role": "user", "content": full_prompt}],
+        max_tokens=1000
+    )
+
+    return response.choices[0].message.content
+
+# -----------------------------
+# Streamlit App UI
+# -----------------------------
+st.title("🏥 Medical Imaging Diagnosis Agent")
+st.write("Upload a medical image for professional analysis")
+
+upload_container = st.container()
+image_container = st.container()
+analysis_container = st.container()
+
+# -----------------------------
+# GPT Prompt Template
+# -----------------------------
+query_template = """
+You are a highly skilled medical imaging expert with extensive knowledge in radiology and diagnostic imaging. Analyze the patient's medical image provided as a file path: {image_path} and structure your response as follows:
 
 ### 1. Image Type & Region
 - Specify imaging modality (X-ray/MRI/CT/Ultrasound/etc.)
@@ -82,25 +110,12 @@ You are a highly skilled medical imaging expert with extensive knowledge in radi
 - Include visual analogies if helpful
 - Address common patient concerns related to these findings
 
-### 5. Research Context
-IMPORTANT: Use the DuckDuckGo search tool to:
-- Find recent medical literature about similar cases
-- Search for standard treatment protocols
-- Provide a list of relevant medical links of them too
-- Research any relevant technological advances
-- Include 2-3 key references to support your analysis
-
 Format your response using clear markdown headers and bullet points. Be concise yet thorough.
 """
 
-st.title("🏥 Medical Imaging Diagnosis Agent")
-st.write("Upload a medical image for professional analysis")
-
-# Create containers for better organization
-upload_container = st.container()
-image_container = st.container()
-analysis_container = st.container()
-
+# -----------------------------
+# Upload Image
+# -----------------------------
 with upload_container:
     uploaded_file = st.file_uploader(
         "Upload Medical Image",
@@ -133,25 +148,29 @@ if uploaded_file is not None:
     
     with analysis_container:
         if analyze_button:
-            with st.spinner("🔄 Analyzing image... Please wait."):
-                try:
-                    temp_path = "temp_resized_image.png"
-                    resized_image.save(temp_path)
-                    
-                    # Create AgnoImage object
-                    agno_image = AgnoImage(filepath=temp_path)
-                    
-                    # Run analysis
-                    response: RunOutput = medical_agent.run(query, images=[agno_image])
-                    st.markdown("### 📋 Analysis Results")
-                    st.markdown("---")
-                    st.markdown(response.content)
-                    st.markdown("---")
-                    st.caption(
-                        "Note: This analysis is generated by AI and should be reviewed by "
-                        "a qualified healthcare professional."
-                    )
-                except Exception as e:
-                    st.error(f"Analysis error: {e}")
+            if not st.session_state.OPENAI_API_KEY:
+                st.warning("Please configure your OpenAI API key in the sidebar.")
+            else:
+                with st.spinner("🔄 Analyzing image with GPT-4V... Please wait."):
+                    try:
+                        temp_path = "temp_resized_image.png"
+                        resized_image.save(temp_path)
+                        
+                        # Run GPT-4V analysis
+                        result = generate_analysis_with_image(
+                            query_template.format(image_path=temp_path),
+                            temp_path
+                        )
+                        
+                        st.markdown("### 📋 Analysis Results")
+                        st.markdown("---")
+                        st.markdown(result)
+                        st.markdown("---")
+                        st.caption(
+                            "Note: This analysis is generated by AI and should be reviewed by "
+                            "a qualified healthcare professional."
+                        )
+                    except Exception as e:
+                        st.error(f"Analysis error: {e}")
 else:
     st.info("👆 Please upload a medical image to begin analysis")
